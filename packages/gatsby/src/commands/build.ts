@@ -63,6 +63,7 @@ import {
 import { validateEngines } from "../utils/validate-engines"
 import { constructConfigObject } from "../utils/gatsby-cloud-config"
 import { waitUntilWorkerJobsAreComplete } from "../utils/jobs/worker-messaging"
+import { writeTypeScriptTypes } from "../utils/graphql-typegen/ts-codegen"
 
 module.exports = async function build(
   program: IBuildArgs,
@@ -85,6 +86,8 @@ module.exports = async function build(
       `React Profiling is enabled. This can have a performance impact. See https://www.gatsbyjs.com/docs/profiling-site-performance-with-react-profiler/#performance-impact`
     )
   }
+
+  report.verbose(`Running build in "${process.env.NODE_ENV}" environment`)
 
   await updateInternalSiteMetadata({
     name: program.sitePackageJson.name,
@@ -418,6 +421,42 @@ module.exports = async function build(
 
   await waitMaterializePageMode
   const waitWorkerPoolEnd = Promise.all(workerPool.end())
+
+  // create scope so we don't leak state object
+  {
+    const { schema, definitions, config } = store.getState()
+    const directory = program.directory
+    const graphqlTypegenOptions = config.graphqlTypegen
+
+    // Only generate types when the option is enabled
+    if (graphqlTypegenOptions && graphqlTypegenOptions.generateOnBuild) {
+      const typegenActivity = reporter.activityTimer(
+        `Generating TypeScript types`,
+        {
+          parentSpan: buildSpan,
+        }
+      )
+      typegenActivity.start()
+
+      try {
+        await writeTypeScriptTypes(
+          directory,
+          schema,
+          definitions,
+          graphqlTypegenOptions
+        )
+      } catch (err) {
+        typegenActivity.panicOnBuild({
+          id: `12100`,
+          context: {
+            sourceMessage: err,
+          },
+        })
+      }
+
+      typegenActivity.end()
+    }
+  }
 
   {
     let SSGCount = 0
